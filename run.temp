@@ -1,0 +1,4 @@
+#!/bin/bash
+
+snakemake -s snakefile --cores NCORES --printshellcmds --verbose --keep-going --use-conda
+

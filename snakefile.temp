@@ -1,0 +1,93 @@
+import os
+import random
+
+# Read barcodes from file and create a list of barcode names
+BARCODES = []
+with open("Inputs/barcodes.txt", "r") as file:
+    for line in file:
+        name = line.strip().split(',')[0]
+        BARCODES.append(name)
+
+# Dynamically list all the chip folders under the specified directory
+CHIP_DIRS = [name for name in os.listdir("/data/data-transfer_KCRB/HTNAME") if os.path.isdir(os.path.join("/data/data-transfer_KCRB/HTNAME", name)) and 'Chip' in name]
+
+# List all Native directories for each Chip
+NATIVE_DIRS = {}
+for chip in CHIP_DIRS:
+    chip_dir=f"/data/data-transfer_KCRB/HTNAME/{chip}"
+    subfolder = next(os.path.join(chip_dir, d) for d in os.listdir(chip_dir) if os.path.isdir(os.path.join(chip_dir, d)))
+    fastq_dir = os.path.join(subfolder, "fastq_pass")
+    NATIVE_DIRS[chip] = [name for name in os.listdir(fastq_dir) if os.path.isdir(os.path.join(fastq_dir, name))]
+    
+# Function to list a random subset of NSAMPLE FASTQ files for a given chip
+def list_fastq_files(wildcards):
+    chip_dir = f"/data/data-transfer_KCRB/HTNAME/{wildcards.chip}"
+    subfolder = next(os.path.join(chip_dir, d) for d in os.listdir(chip_dir) if os.path.isdir(os.path.join(chip_dir, d)))
+    fastq_dir = os.path.join(subfolder, "fastq_pass")
+    native_dir = f"{fastq_dir}/{wildcards.native}"
+    fastq_files = [f for f in os.listdir(native_dir) if f.endswith('.fastq.gz')]
+    # Select NSAMPLE random files if there are more than NSAMPLE, else select all
+    selected_files = random.sample(fastq_files, min(NSAMPLE, len(fastq_files)))
+    return [os.path.join(native_dir, f) for f in selected_files]
+
+# Define rule all to specify final outputs for each chip
+rule all:
+    input:
+        expand("results/{chip}/{native}/merged/merged.fastq.gz", chip=CHIP_DIRS, native=NATIVE_DIRS[chip]),
+ 	expand("results/{chip}/{native}/demultiplexed/{chip}_{native}_summary.csv", chip=CHIP_DIRS, native=NATIVE_DIRS[chip]),
+        expand("results/{chip}/{native}/aligned/{chip}_{native}_{barcode}_non_sequential_summary.csv", chip=CHIP_DIRS, barcode=BARCODES, native=NATIVE_DIRS[chip]),
+        expand("results/{chip}/{native}/aligned/{chip}_{native}_{barcode}_sequential_summary.csv", chip=CHIP_DIRS, barcode=BARCODES, native=NATIVE_DIRS[chip]),
+
+# Rule to merge a random selection of NSAMPLE FASTQ files
+rule merge_fastq:
+    input:
+        list_fastq_files
+    output:
+        "results/{chip}/{native}/merged/merged.fastq.gz"
+    shell:
+        """
+        for f in {input}; do
+            cat "$f" >> {output}.temp;
+        done
+        mv {output}.temp {output}
+        """
+	
+rule demultiplex:
+    input:
+        merged_fastq="results/{chip}/{native}/merged/merged.fastq.gz",
+        barcodes="Inputs/barcodes.txt",
+    output:
+        "results/{chip}/{native}/demultiplexed/{chip}_{native}_summary.csv"
+    params:
+        output_dir="results/{chip}/{native}/demultiplexed/",
+        chip="{chip}",
+	native="{native}"
+    shell:
+        """
+        mkdir -p {params.output_dir} && \
+        python3 Scripts/demultiplex.py {input.merged_fastq} {params.output_dir} {input.barcodes} {params.chip} {params.native}
+        """
+
+rule align:
+    input:
+        Templates="Inputs/Templates.fasta",
+	summary="results/{chip}/{native}/demultiplexed/{chip}_{native}_summary.csv"
+    output:
+        Non_sequential_summary="results/{chip}/{native}/aligned/{chip}_{native}_{barcode}_non_sequential_summary.csv",
+        Sequential_summary="results/{chip}/{native}/aligned/{chip}_{native}_{barcode}_sequential_summary.csv",
+        Aligned_reads="results/{chip}/{native}/aligned/{chip}_{native}_{barcode}_aligned.fastq.gz",
+	Errors_out="results/{chip}/{native}/aligned/{chip}_{native}_{barcode}_errors.out"
+    params:
+        fastq="results/{chip}/{native}/demultiplexed/{chip}_{native}_{barcode}.fastq.gz",	
+        output_dir="results/{chip}/{native}/aligned/",
+	chip="{chip}",
+	native="{native}",
+	cut_off="CUTOFF"
+    shell:
+        """
+        mkdir -p {params.output_dir} && \
+        python3 Scripts/align.py --iq {params.fastq} --ia {input.Templates} --od {params.output_dir} --score_cut_off {params.cut_off} --chip {params.chip} --native {params.native}
+        """
+
+
+
